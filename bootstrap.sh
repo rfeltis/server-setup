@@ -24,7 +24,7 @@ fi
 
 echo ">>> Installing bootstrap packages"
 sudo apt-get update
-sudo apt-get install -y git ansible python3-debian gh openssh-client curl
+sudo apt-get install -y git ansible python3-apt python3-debian gh openssh-client curl
 
 # --- Get the code ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd || true)"
