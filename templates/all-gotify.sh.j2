@@ -1,0 +1,18 @@
+#!/bin/sh
+# Sends every ZFS event to Gotify. ZED passes event details in ZEVENT_* variables.
+
+[ -n "${ZEVENT_SUBCLASS}" ] || exit 0
+
+message="Pool: ${ZEVENT_POOL:-unknown}"
+[ -n "${ZEVENT_POOL_STATE_STR}" ] && message="${message} (${ZEVENT_POOL_STATE_STR})"
+[ -n "${ZEVENT_VDEV_PATH}" ] && message="${message}
+Device: ${ZEVENT_VDEV_PATH} (${ZEVENT_VDEV_STATE_STR:-unknown state})"
+[ -n "${ZEVENT_TIME_STRING}" ] && message="${message}
+Time: ${ZEVENT_TIME_STRING}"
+
+curl -fsS --max-time 10 \
+  -H "X-Gotify-Key: {{ gotify_token }}" \
+  --form-string "title=ZFS ${ZEVENT_SUBCLASS}" \
+  --form-string "message=${message}" \
+  --form-string "priority=8" \
+  "{{ gotify_url }}/message" >/dev/null

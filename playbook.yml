@@ -1,0 +1,271 @@
+---
+- name: Set up the server
+  hosts: all
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    user_name: "{{ lookup('env', 'USER') }}"
+    home_dir: "{{ lookup('env', 'HOME') }}"
+    release: "{{ ansible_distribution_release }}"
+    zfs_pool: tank
+    secrets_file: /mnt/data/bootstrap/secrets.yml
+    packages:
+      - bat
+      - btop
+      - cron
+      - curl
+      - eza
+      - fastfetch
+      - ffmpeg
+      - fish
+      - fuse3
+      - fzf
+      - git
+      - gocryptfs
+      - linux-headers-amd64
+      - micro
+      - mkvtoolnix
+      - ncdu
+      - pwgen
+      - sqlite3
+      - tmux
+      - zoxide
+      - unattended-upgrades
+      - apt-listchanges
+    zfs_packages:
+      - zfs-dkms
+      - zfsutils-linux
+      - zfs-zed
+    docker_packages:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+
+  handlers:
+    - name: Restart ZED
+      become: true
+      ansible.builtin.systemd_service:
+        name: zfs-zed
+        state: restarted
+
+  tasks:
+    - name: Remove the backports line from sources.list
+      become: true
+      ansible.builtin.lineinfile:
+        path: /etc/apt/sources.list
+        regexp: '^deb\s.*\s{{ release }}-backports\s'
+        state: absent
+
+    - name: Add the backports repository
+      become: true
+      ansible.builtin.deb822_repository:
+        name: backports
+        types: deb
+        uris: http://deb.debian.org/debian
+        suites: "{{ release }}-backports"
+        components: [main, contrib, non-free, non-free-firmware]
+
+    - name: Remove the old docker.list repository entry
+      become: true
+      ansible.builtin.file:
+        path: /etc/apt/sources.list.d/docker.list
+        state: absent
+
+    - name: Add the Docker repository
+      become: true
+      ansible.builtin.deb822_repository:
+        name: docker
+        types: deb
+        uris: https://download.docker.com/linux/debian
+        suites: "{{ release }}"
+        components: stable
+        signed_by: https://download.docker.com/linux/debian/gpg
+
+    - name: Refresh the package lists
+      become: true
+      ansible.builtin.apt:
+        update_cache: true
+      changed_when: false
+
+    - name: Install packages
+      become: true
+      ansible.builtin.apt:
+        name: "{{ packages }}"
+        state: present
+
+    - name: Remove the hand-installed fzf in favor of the apt package
+      become: true
+      ansible.builtin.file:
+        path: /usr/local/bin/fzf
+        state: absent
+
+    - name: Set up ZFS
+      tags: zfs
+      block:
+        - name: Install ZFS from backports
+          become: true
+          ansible.builtin.apt:
+            name: "{{ zfs_packages }}"
+            state: present
+            default_release: "{{ release }}-backports"
+
+        - name: Load the ZFS kernel module
+          become: true
+          ansible.builtin.command: modprobe zfs
+          changed_when: false
+
+        - name: Check whether the pool is imported
+          ansible.builtin.command: zpool list -H -o name {{ zfs_pool }}
+          register: pool
+          failed_when: false
+          changed_when: false
+          check_mode: false
+
+        # -f because a fresh OS install has a new hostid, so ZFS thinks the pool belongs to another system.
+        - name: Import the pool
+          become: true
+          ansible.builtin.command: zpool import -f {{ zfs_pool }}
+          when: pool.rc != 0
+          changed_when: true
+
+        - name: Enable ZED
+          become: true
+          tags: services
+          ansible.builtin.systemd_service:
+            name: zfs-zed
+            enabled: true
+            state: started
+
+        - name: Check for the secrets file
+          ansible.builtin.stat:
+            path: "{{ secrets_file }}"
+          register: secrets
+
+        - name: Load secrets
+          ansible.builtin.include_vars:
+            file: "{{ secrets_file }}"
+          when: secrets.stat.exists
+
+        - name: Warn that Gotify alerts are not configured
+          ansible.builtin.debug:
+            msg: "{{ secrets_file }} is missing, so ZFS alerts will not be sent to Gotify. See README.md."
+          when: not secrets.stat.exists
+
+        - name: Check the Gotify zedlet
+          ansible.builtin.stat:
+            path: /etc/zfs/zed.d/all-gotify.sh
+          register: zedlet
+
+        - name: Remove the old symlinked Gotify zedlet
+          become: true
+          ansible.builtin.file:
+            path: /etc/zfs/zed.d/all-gotify.sh
+            state: absent
+          when: secrets.stat.exists and zedlet.stat.islnk | default(false)
+
+        - name: Install the Gotify zedlet
+          become: true
+          ansible.builtin.template:
+            src: all-gotify.sh.j2
+            dest: /etc/zfs/zed.d/all-gotify.sh
+            owner: root
+            group: root
+            mode: "0700"
+          diff: false
+          when: secrets.stat.exists
+          notify: Restart ZED
+
+    - name: Set up Docker
+      tags: docker
+      block:
+        - name: Install Docker
+          become: true
+          ansible.builtin.apt:
+            name: "{{ docker_packages }}"
+            state: present
+
+        - name: Enable Docker
+          become: true
+          tags: services
+          ansible.builtin.systemd_service:
+            name: docker
+            enabled: true
+            state: started
+
+        - name: Add the user to the docker group
+          become: true
+          ansible.builtin.user:
+            name: "{{ user_name }}"
+            groups: docker
+            append: true
+
+    - name: Turn on automatic updates
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        mode: "0644"
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+
+    - name: Include Docker in automatic updates and reboot when needed
+      become: true
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/52unattended-upgrades-local
+        mode: "0644"
+        content: |
+          Unattended-Upgrade::Origins-Pattern {
+                  "origin=Docker,codename=${distro_codename}";
+          };
+          Unattended-Upgrade::Automatic-Reboot "true";
+          Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+
+    - name: Set fish as the login shell
+      become: true
+      ansible.builtin.user:
+        name: "{{ user_name }}"
+        shell: /usr/bin/fish
+
+    - name: Create the fish config directory
+      ansible.builtin.file:
+        path: "{{ home_dir }}/.config/fish"
+        state: directory
+        mode: "0755"
+
+    - name: Link the fish config from the repo
+      ansible.builtin.file:
+        src: "{{ playbook_dir }}/fish/config.fish"
+        dest: "{{ home_dir }}/.config/fish/config.fish"
+        state: link
+        force: true
+
+    - name: Turn on fzf key bindings in bash
+      ansible.builtin.lineinfile:
+        path: "{{ home_dir }}/.bashrc"
+        line: eval "$(fzf --bash)"
+        create: true
+        mode: "0644"
+
+    - name: Turn on tmux mouse support
+      ansible.builtin.lineinfile:
+        path: "{{ home_dir }}/.tmux.conf"
+        line: setw -g mouse on
+        create: true
+        mode: "0644"
+
+    - name: Read the crontab
+      ansible.builtin.command: crontab -l
+      register: crontab
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: Remove the old deluge restart jobs
+      ansible.builtin.command:
+        cmd: crontab -
+        stdin: "{{ crontab.stdout_lines | reject('search', 'restart deluge') | join('\n') }}"
+      when: "'restart deluge' in crontab.stdout"
+      changed_when: true
