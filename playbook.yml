@@ -282,6 +282,17 @@
             group: docker
             mode: "0664"
 
+        # The compose secrets live here, one env file per app. Only root and the docker group can open the folder,
+        # so the music container and SMB users can't read or change them. The setgid bit gives new files the docker group.
+        - name: Create the folder for compose secrets
+          become: true
+          ansible.builtin.file:
+            path: "{{ zfs_mountpoint }}/secrets"
+            state: directory
+            owner: root
+            group: docker
+            mode: "2770"
+
         - name: Create the local bin directory
           tags: updates
           ansible.builtin.file:

@@ -50,6 +50,20 @@ The nightly update runs the projects in `compose_projects` with root access. The
 
 To add a folder directly in `/mnt/data` or `/mnt/data/home`, create it with `sudo mkdir`, then give it to the right user with `sudo chown`. Don't delete `/mnt/data/.music-unlink-recovery`, because music can't recreate it there.
 
+## Compose secrets
+
+Passwords, tokens, and keys don't go in the compose file. Each app that needs them has an env file in `/mnt/data/secrets`, for example `secrets/vaultwarden.env`, and the compose file loads it:
+
+```yaml
+    env_file:
+      - path: ./secrets/vaultwarden.env
+        format: raw
+```
+
+With `format: raw`, each line is `NAME=value` and the value is used exactly as written, with no quoting and no `$` handling. Blank lines and lines starting with `#` are skipped, but spaces at the end of a line become part of the value. Only root and the `docker` group can open `/mnt/data/secrets`, so the `music` container and SMB users can't read or change the files.
+
+Create and edit the files as your own user, not with sudo. Every compose command reads all of a project's env files, so a file you can't read breaks the nightly update for the whole project. After editing one, recreate the app from `/mnt/data` with `docker compose up -d <service>`.
+
 ## Container updates
 
 At 02:00 every night, cron runs `~/.local/bin/update-containers`. For each project in `compose_projects`, it runs `docker compose pull`, then `docker compose up -d`, which recreates only the containers whose image changed. Services with a `build:` section are skipped. Afterwards it removes old images. Change the time with `container_update_hour`. Keep it after the apt upgrade at 01:00 and before the 06:00 reboot, because an upgrade of Docker or containerd breaks a `docker compose` run that's in progress.
@@ -62,7 +76,7 @@ journalctl -t update-containers
 
 To run it by hand, run `~/.local/bin/update-containers`. To hold a container at a version, pin its image tag in the compose file.
 
-## Secrets
+## Gotify token
 
 The Gotify token isn't stored in this public repo. The playbook reads it from `/mnt/data/bootstrap/secrets.yml` on the ZFS pool, which survives an OS reinstall:
 
