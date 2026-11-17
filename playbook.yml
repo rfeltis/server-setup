@@ -9,6 +9,7 @@
     home_dir: "{{ lookup('env', 'HOME') }}"
     release: "{{ ansible_distribution_release }}"
     zfs_pool: tank
+    zfs_mountpoint: /mnt/data
     secrets_file: /mnt/data/bootstrap/secrets.yml
     compose_projects:
       - /mnt/data
@@ -59,6 +60,11 @@
       ansible.builtin.systemd_service:
         name: zfs-zed
         state: restarted
+
+    - name: Reload systemd
+      become: true
+      ansible.builtin.systemd_service:
+        daemon_reload: true
 
     - name: Reload the apt timers
       become: true
@@ -209,6 +215,30 @@
           ansible.builtin.apt:
             name: "{{ docker_packages }}"
             state: present
+
+        - name: Create the Docker service drop-in directory
+          become: true
+          ansible.builtin.file:
+            path: /etc/systemd/system/docker.service.d
+            state: directory
+            mode: "0755"
+
+        # Without the pool, containers would start on empty folders on the root disk and set themselves up from scratch.
+        # The mount check stops that. RequiresMountsFor can't, because systemd only creates the mount unit once the dataset
+        # is mounted, but it makes Docker stop before the pool unmounts at shutdown.
+        - name: Start Docker only when the ZFS pool is mounted
+          become: true
+          ansible.builtin.copy:
+            dest: /etc/systemd/system/docker.service.d/zfs.conf
+            mode: "0644"
+            content: |
+              [Unit]
+              After=zfs-mount.service
+              RequiresMountsFor={{ zfs_mountpoint }}
+
+              [Service]
+              ExecStartPre=/usr/bin/mountpoint -q {{ zfs_mountpoint }}
+          notify: Reload systemd
 
         - name: Enable Docker
           become: true

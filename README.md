@@ -29,11 +29,20 @@ Extra arguments go to `ansible-playbook`. For example, `./apply.sh --check --dif
 - Command-line tools: fish, tmux, eza, btop, bat, fzf, zoxide, fastfetch, micro, ncdu, ffmpeg, mkvtoolnix, gocryptfs, and others
 - ZFS from Debian backports. If the `tank` pool isn't imported, the playbook imports it with `zpool import -f`. After an OS reinstall, the new system has a different host ID, so ZFS needs `-f` to take over the pool.
 - ZED alerts to Gotify (see below)
-- Docker from Docker's apt repository, with your user in the `docker` group
+- Docker from Docker's apt repository, with your user in the `docker` group. Docker only starts when the ZFS pool is mounted (see below).
 - Nightly container updates (see below)
 - Unattended upgrades for Debian, Debian security, and Docker packages. apt refreshes the package lists at 00:30 and installs upgrades at 01:00, and the server reboots at 04:00 when an update needs one. Change the times with `apt_update_time`, `apt_upgrade_time`, and `apt_reboot_time`.
 - fish as your login shell, linked to `fish/config.fish` in this repo
 - fzf key bindings in bash, and mouse support in tmux
+
+## Docker and the ZFS pool
+
+The containers keep their data under `/mnt/data` on the ZFS pool. If the pool isn't mounted, Docker refuses to start, so containers never start on empty folders on the root disk and set themselves up from scratch. The pool might not be mounted after a reboot if, for example, ZFS didn't build for a new kernel. Once `mountpoint /mnt/data` says it's a mountpoint again, run:
+
+```
+sudo systemctl reset-failed docker
+sudo systemctl start docker
+```
 
 ## Container updates
 
