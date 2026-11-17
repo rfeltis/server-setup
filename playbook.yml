@@ -255,6 +255,31 @@
             groups: docker
             append: true
 
+        # The nightly update runs the compose projects with root access, and the music container and the stryke SMB share
+        # can write anywhere in the pool as uid 1000. Root ownership stops them from editing the compose file or adding
+        # a compose.yaml or override file, and from renaming home/test to swap in another project. The docker group can
+        # still edit the compose file in place.
+        - name: Make the pool root and home folder writable only by root
+          become: true
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+          loop:
+            - "{{ zfs_mountpoint }}"
+            - "{{ zfs_mountpoint }}/home"
+
+        - name: Make the compose file writable only by the docker group
+          become: true
+          ansible.builtin.file:
+            path: "{{ zfs_mountpoint }}/docker-compose.yml"
+            state: file
+            owner: root
+            group: docker
+            mode: "0664"
+
         - name: Create the local bin directory
           tags: updates
           ansible.builtin.file:

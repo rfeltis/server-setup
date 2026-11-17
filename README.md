@@ -44,6 +44,12 @@ sudo systemctl reset-failed docker
 sudo systemctl start docker
 ```
 
+## Editing the compose file
+
+The nightly update runs the projects in `compose_projects` with root access. The `music` container and the `stryke` SMB share could otherwise write anywhere in `/mnt/data` as your user, so `/mnt/data`, `/mnt/data/home`, and the main compose file are owned by root, and only the `docker` group can edit the compose file. Edit it in place on the server, for example with micro or nano. You can't edit it over SMB.
+
+To add a folder directly in `/mnt/data` or `/mnt/data/home`, create it with `sudo mkdir`, then give it to the right user with `sudo chown`. Don't delete `/mnt/data/.music-unlink-recovery`, because music can't recreate it there.
+
 ## Container updates
 
 At 02:00 every night, cron runs `~/.local/bin/update-containers`. For each project in `compose_projects`, it runs `docker compose pull`, then `docker compose up -d`, which recreates only the containers whose image changed. Services with a `build:` section are skipped. Afterwards it removes old images. Change the time with `container_update_hour`. Keep it after the apt upgrade at 01:00 and before the 04:00 reboot, because an upgrade of Docker or containerd breaks a `docker compose` run that's in progress.
