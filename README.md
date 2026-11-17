@@ -22,7 +22,7 @@ Edit `playbook.yml`, then run:
 ~/code/server-setup/apply.sh
 ```
 
-Extra arguments go to `ansible-playbook`. For example, `./apply.sh --check --diff` previews changes, and `./apply.sh --tags docker` runs only the Docker tasks.
+Extra arguments go to `ansible-playbook`. For example, `./apply.sh --check --diff` previews changes, `./apply.sh --tags docker` runs only the Docker tasks, and `./apply.sh --tags updates` runs only the automatic update tasks.
 
 ## What it sets up
 
@@ -31,13 +31,13 @@ Extra arguments go to `ansible-playbook`. For example, `./apply.sh --check --dif
 - ZED alerts to Gotify (see below)
 - Docker from Docker's apt repository, with your user in the `docker` group
 - Nightly container updates (see below)
-- Unattended upgrades for Debian, Debian security, and Docker packages, with an automatic reboot at 04:00 when an update needs one
+- Unattended upgrades for Debian, Debian security, and Docker packages. apt refreshes the package lists at 00:30 and installs upgrades at 01:00, and the server reboots at 04:00 when an update needs one. Change the times with `apt_update_time`, `apt_upgrade_time`, and `apt_reboot_time`.
 - fish as your login shell, linked to `fish/config.fish` in this repo
 - fzf key bindings in bash, and mouse support in tmux
 
 ## Container updates
 
-At 01:00 every night, cron runs `~/.local/bin/update-containers`. For each project in `compose_projects`, it runs `docker compose pull`, then `docker compose up -d`, which recreates only the containers whose image changed. Services with a `build:` section are skipped. Afterwards it removes old images. Change the time with `container_update_hour`.
+At 02:00 every night, cron runs `~/.local/bin/update-containers`. For each project in `compose_projects`, it runs `docker compose pull`, then `docker compose up -d`, which recreates only the containers whose image changed. Services with a `build:` section are skipped. Afterwards it removes old images. Change the time with `container_update_hour`. Keep it after the apt upgrade at 01:00 and before the 04:00 reboot, because an upgrade of Docker or containerd breaks a `docker compose` run that's in progress.
 
 It sends a Gotify message listing the updated containers. If a pull or `up` fails, it sends a high-priority message instead. If nothing changed, it stays quiet. To see the logs, run:
 

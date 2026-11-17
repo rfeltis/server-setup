@@ -13,7 +13,12 @@
     compose_projects:
       - /mnt/data
       - /mnt/data/home/test
-    container_update_hour: "1"
+    # Run the container update between the apt upgrade and the reboot,
+    # because an upgrade of Docker or containerd breaks a docker compose run that's in progress.
+    apt_update_time: "00:30"
+    apt_upgrade_time: "01:00"
+    apt_reboot_time: "04:00"
+    container_update_hour: "2"
     packages:
       - bat
       - btop
@@ -54,6 +59,16 @@
       ansible.builtin.systemd_service:
         name: zfs-zed
         state: restarted
+
+    - name: Reload the apt timers
+      become: true
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: restarted
+        daemon_reload: true
+      loop:
+        - apt-daily.timer
+        - apt-daily-upgrade.timer
 
   tasks:
     - name: Remove the backports line from sources.list
@@ -211,12 +226,14 @@
             append: true
 
         - name: Create the local bin directory
+          tags: updates
           ansible.builtin.file:
             path: "{{ home_dir }}/.local/bin"
             state: directory
             mode: "0755"
 
         - name: Install the container update script
+          tags: updates
           ansible.builtin.template:
             src: update-containers.sh.j2
             dest: "{{ home_dir }}/.local/bin/update-containers"
@@ -224,6 +241,7 @@
           diff: false
 
         - name: Update containers every night
+          tags: updates
           ansible.builtin.cron:
             name: Update containers
             minute: "0"
@@ -232,6 +250,7 @@
 
     - name: Turn on automatic updates
       become: true
+      tags: updates
       ansible.builtin.copy:
         dest: /etc/apt/apt.conf.d/20auto-upgrades
         mode: "0644"
@@ -239,8 +258,39 @@
           APT::Periodic::Update-Package-Lists "1";
           APT::Periodic::Unattended-Upgrade "1";
 
+    - name: Create the apt timer override directories
+      become: true
+      tags: updates
+      ansible.builtin.file:
+        path: /etc/systemd/system/{{ item }}.timer.d
+        state: directory
+        mode: "0755"
+      loop:
+        - apt-daily
+        - apt-daily-upgrade
+
+    - name: Schedule the apt timers
+      become: true
+      tags: updates
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/{{ item.timer }}.timer.d/override.conf
+        mode: "0644"
+        content: |
+          [Timer]
+          OnCalendar=
+          OnCalendar=*-*-* {{ item.time }}
+          RandomizedDelaySec=0
+          Persistent=false
+      loop:
+        - { timer: apt-daily, time: "{{ apt_update_time }}" }
+        - { timer: apt-daily-upgrade, time: "{{ apt_upgrade_time }}" }
+      loop_control:
+        label: "{{ item.timer }}"
+      notify: Reload the apt timers
+
     - name: Include Docker in automatic updates and reboot when needed
       become: true
+      tags: updates
       ansible.builtin.copy:
         dest: /etc/apt/apt.conf.d/52unattended-upgrades-local
         mode: "0644"
@@ -249,7 +299,7 @@
                   "origin=Docker,codename=${distro_codename}";
           };
           Unattended-Upgrade::Automatic-Reboot "true";
-          Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+          Unattended-Upgrade::Automatic-Reboot-Time "{{ apt_reboot_time }}";
 
     - name: Set fish as the login shell
       become: true
