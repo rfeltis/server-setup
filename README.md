@@ -31,7 +31,7 @@ Extra arguments go to `ansible-playbook`. For example, `./apply.sh --check --dif
 - ZED alerts to Gotify (see below)
 - Docker from Docker's apt repository, with your user in the `docker` group. Docker only starts when the ZFS pool is mounted (see below).
 - Nightly container updates (see below)
-- Unattended upgrades for Debian, Debian security, and Docker packages. apt refreshes the package lists at 00:30 and installs upgrades at 01:00, and the server reboots at 04:00 when an update needs one. Change the times with `apt_update_time`, `apt_upgrade_time`, and `apt_reboot_time`.
+- Unattended upgrades for Debian, Debian security, and Docker packages. apt refreshes the package lists at 00:30 and installs upgrades at 01:00, and the server reboots at 06:00 when an update needs one. Kopia backs up every 12 hours, at 00:00 and 12:00 UTC, and the reboot time is set after the 12:00 UTC run (04:00 local in winter, 05:00 in summer). If you change Kopia's snapshot interval, check the reboot time still clears it. Change the times with `apt_update_time`, `apt_upgrade_time`, and `apt_reboot_time`.
 - fish as your login shell, linked to `fish/config.fish` in this repo
 - fzf key bindings in bash, and mouse support in tmux
 
@@ -52,7 +52,7 @@ To add a folder directly in `/mnt/data` or `/mnt/data/home`, create it with `sud
 
 ## Container updates
 
-At 02:00 every night, cron runs `~/.local/bin/update-containers`. For each project in `compose_projects`, it runs `docker compose pull`, then `docker compose up -d`, which recreates only the containers whose image changed. Services with a `build:` section are skipped. Afterwards it removes old images. Change the time with `container_update_hour`. Keep it after the apt upgrade at 01:00 and before the 04:00 reboot, because an upgrade of Docker or containerd breaks a `docker compose` run that's in progress.
+At 02:00 every night, cron runs `~/.local/bin/update-containers`. For each project in `compose_projects`, it runs `docker compose pull`, then `docker compose up -d`, which recreates only the containers whose image changed. Services with a `build:` section are skipped. Afterwards it removes old images. Change the time with `container_update_hour`. Keep it after the apt upgrade at 01:00 and before the 06:00 reboot, because an upgrade of Docker or containerd breaks a `docker compose` run that's in progress.
 
 It sends a Gotify message listing the updated containers. If a pull or `up` fails, it sends a high-priority message instead. If nothing changed, it stays quiet. To see the logs, run:
 

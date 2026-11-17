@@ -16,9 +16,11 @@
       - /mnt/data/home/test
     # Run the container update between the apt upgrade and the reboot,
     # because an upgrade of Docker or containerd breaks a docker compose run that's in progress.
+    # Kopia backs up every 12 hours, at 00:00 and 12:00 UTC, and takes a few minutes. The reboot is set after
+    # the 12:00 UTC run (04:00 local in winter, 05:00 in summer), so recheck it if Kopia's snapshot interval changes.
     apt_update_time: "00:30"
     apt_upgrade_time: "01:00"
-    apt_reboot_time: "04:00"
+    apt_reboot_time: "06:00"
     container_update_hour: "2"
     packages:
       - bat
