@@ -10,6 +10,10 @@
     release: "{{ ansible_distribution_release }}"
     zfs_pool: tank
     secrets_file: /mnt/data/bootstrap/secrets.yml
+    compose_projects:
+      - /mnt/data
+      - /mnt/data/home/test
+    container_update_hour: "1"
     packages:
       - bat
       - btop
@@ -139,19 +143,23 @@
             enabled: true
             state: started
 
+        # Tagged always because the Docker tasks need the Gotify settings too.
         - name: Check for the secrets file
+          tags: always
           ansible.builtin.stat:
             path: "{{ secrets_file }}"
           register: secrets
 
         - name: Load secrets
+          tags: always
           ansible.builtin.include_vars:
             file: "{{ secrets_file }}"
           when: secrets.stat.exists
 
         - name: Warn that Gotify alerts are not configured
+          tags: always
           ansible.builtin.debug:
-            msg: "{{ secrets_file }} is missing, so ZFS alerts will not be sent to Gotify. See README.md."
+            msg: "{{ secrets_file }} is missing, so ZFS and container update alerts will not be sent to Gotify. See README.md."
           when: not secrets.stat.exists
 
         - name: Check the Gotify zedlet
@@ -201,6 +209,26 @@
             name: "{{ user_name }}"
             groups: docker
             append: true
+
+        - name: Create the local bin directory
+          ansible.builtin.file:
+            path: "{{ home_dir }}/.local/bin"
+            state: directory
+            mode: "0755"
+
+        - name: Install the container update script
+          ansible.builtin.template:
+            src: update-containers.sh.j2
+            dest: "{{ home_dir }}/.local/bin/update-containers"
+            mode: "0700"
+          diff: false
+
+        - name: Update containers every night
+          ansible.builtin.cron:
+            name: Update containers
+            minute: "0"
+            hour: "{{ container_update_hour }}"
+            job: "{{ home_dir }}/.local/bin/update-containers 2>&1 | systemd-cat -t update-containers"
 
     - name: Turn on automatic updates
       become: true

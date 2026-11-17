@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Pulls new images for each compose project and recreates the containers whose image changed.
+# Installed by server-setup from templates/update-containers.sh.j2, so edits here get overwritten.
+set -uo pipefail
+
+projects=(
+{% for project in compose_projects %}
+    {{ project | quote }}
+{% endfor %}
+)
+
+notify() {
+{% if gotify_token is defined %}
+    curl -fsS --max-time 10 \
+        -H "X-Gotify-Key: {{ gotify_token }}" \
+        --form-string "title=$1" \
+        --form-string "message=$2" \
+        --form-string "priority=$3" \
+        "{{ gotify_url }}/message" >/dev/null || echo "Could not send the Gotify message" >&2
+{% else %}
+    :
+{% endif %}
+}
+{% raw %}
+exec 9>/tmp/update-containers.lock
+if ! flock -n 9; then
+    echo "Another update is already running" >&2
+    exit 1
+fi
+
+updated=()
+problems=()
+
+for dir in "${projects[@]}"; do
+    echo "== $dir"
+    if ! cd "$dir"; then
+        problems+=("$dir: directory not found")
+        continue
+    fi
+
+    before=$(docker compose ps --all --format '{{.Service}} {{.ID}}' | sort)
+
+    # --ignore-pull-failures exits 0 even when an image fails to pull, so check the output for errors.
+    pull_output=$(docker compose pull --quiet --ignore-buildable --ignore-pull-failures 2>&1)
+    pull_status=$?
+    [[ -n $pull_output ]] && echo "$pull_output"
+    while read -r line; do
+        [[ -n $line ]] && problems+=("$dir: $line")
+    done < <(grep -i 'error' <<<"$pull_output")
+    if [[ $pull_status -ne 0 ]]; then
+        problems+=("$dir: docker compose pull exited with $pull_status")
+    fi
+
+    if ! docker compose up -d; then
+        problems+=("$dir: docker compose up failed")
+    fi
+
+    after=$(docker compose ps --all --format '{{.Service}} {{.ID}}' | sort)
+    while read -r service; do
+        [[ -n $service ]] && updated+=("$service")
+    done < <(comm -13 <(echo "$before") <(echo "$after") | cut -d' ' -f1)
+done
+
+docker image prune -f
+
+summary=""
+if [[ ${#updated[@]} -gt 0 ]]; then
+    summary="Updated: ${updated[*]}"
+    echo "$summary"
+fi
+
+if [[ ${#problems[@]} -gt 0 ]]; then
+    printf '%s\n' "${problems[@]}" >&2
+    notify "Container updates had problems" "$(printf '%s\n' "${problems[@]}" "$summary")" 8
+    exit 1
+fi
+
+if [[ -n $summary ]]; then
+    notify "Containers updated" "$summary" 4
+fi
+{% endraw %}

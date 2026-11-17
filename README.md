@@ -30,9 +30,22 @@ Extra arguments go to `ansible-playbook`. For example, `./apply.sh --check --dif
 - ZFS from Debian backports. If the `tank` pool isn't imported, the playbook imports it with `zpool import -f`. After an OS reinstall, the new system has a different host ID, so ZFS needs `-f` to take over the pool.
 - ZED alerts to Gotify (see below)
 - Docker from Docker's apt repository, with your user in the `docker` group
+- Nightly container updates (see below)
 - Unattended upgrades for Debian, Debian security, and Docker packages, with an automatic reboot at 04:00 when an update needs one
 - fish as your login shell, linked to `fish/config.fish` in this repo
 - fzf key bindings in bash, and mouse support in tmux
+
+## Container updates
+
+At 01:00 every night, cron runs `~/.local/bin/update-containers`. For each project in `compose_projects`, it runs `docker compose pull`, then `docker compose up -d`, which recreates only the containers whose image changed. Services with a `build:` section are skipped. Afterwards it removes old images. Change the time with `container_update_hour`.
+
+It sends a Gotify message listing the updated containers. If a pull or `up` fails, it sends a high-priority message instead. If nothing changed, it stays quiet. To see the logs, run:
+
+```
+journalctl -t update-containers
+```
+
+To run it by hand, run `~/.local/bin/update-containers`. To hold a container at a version, pin its image tag in the compose file.
 
 ## Secrets
 
@@ -43,4 +56,4 @@ gotify_url: https://gotify.example.com
 gotify_token: <app token>
 ```
 
-The file must be owned by your user, because the playbook reads it without sudo. Keep it private with `chmod 600`. If it's missing, the playbook skips the Gotify alert script and shows a warning.
+The file must be owned by your user, because the playbook reads it without sudo. Keep it private with `chmod 600`. If it's missing, the playbook skips the Gotify alert script, the container update script runs without notifications, and the playbook shows a warning.
