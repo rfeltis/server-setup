@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Pulls new images for each compose project and recreates the containers whose image changed.
+# Updates the containers in each compose project. Pulls new images and, on the rebuild day, rebuilds local images
+# (services with a build: section) with fresh base images. Then recreates only the running containers whose image
+# changed, so stopped services stay stopped, and restarts the services listed in restart_after.
+# Usage: update-containers [--rebuild] [--dry-run]
 # Installed by server-setup from templates/update-containers.sh.j2, so edits here get overwritten.
 set -uo pipefail
 
@@ -8,7 +11,16 @@ projects=(
     {{ project | quote }}
 {% endfor %}
 )
+rebuild_weekday={{ container_rebuild_weekday | quote }}
+# After the key is updated, restart the value and check that it connects to the key again. The key must be both
+# the service name and the container name; the value is a container name.
+declare -A restart_after=(
+{% for service, dependent in container_restart_after_update.items() %}
+    [{{ service | quote }}]={{ dependent | quote }}
+{% endfor %}
+)
 
+# Sent to Gotify directly on this host, not through the reverse proxy, so a broken proxy update still gets reported.
 notify() {
 {% if gotify_token is defined %}
     curl -fsS --max-time 10 \
@@ -16,12 +28,23 @@ notify() {
         --form-string "title=$1" \
         --form-string "message=$2" \
         --form-string "priority=$3" \
-        "{{ gotify_url }}/message" >/dev/null || echo "Could not send the Gotify message" >&2
+        "{{ gotify_local_url }}/message" >/dev/null || echo "Could not send the Gotify message" >&2
 {% else %}
     :
 {% endif %}
 }
 {% raw %}
+rebuild=false
+dry_run=false
+for arg in "$@"; do
+    case $arg in
+        --rebuild) rebuild=true ;;
+        --dry-run) dry_run=true ;;
+        *) echo "Usage: update-containers [--rebuild] [--dry-run]" >&2; exit 2 ;;
+    esac
+done
+[[ $(date +%u) == "$rebuild_weekday" ]] && rebuild=true
+
 exec 9>/tmp/update-containers.lock
 if ! flock -n 9; then
     echo "Another update is already running" >&2
@@ -29,7 +52,58 @@ if ! flock -n 9; then
 fi
 
 updated=()
+restarted=()
 problems=()
+
+# Reads "service container-id" lines and prints the services whose container uses an older image than its tag
+# points to now.
+outdated_services() {
+    local service id image current
+    while read -r service id; do
+        [[ -n $service ]] || continue
+        image=$(docker inspect -f '{{.Config.Image}}' "$id") || continue
+        current=$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null) || continue
+        if [[ $(docker inspect -f '{{.Image}}' "$id") != "$current" ]]; then
+            echo "$service"
+        fi
+    done
+}
+
+# Waits up to two minutes for each service's containers in the current project to be running, and healthy if they
+# have a health check.
+check_started() {
+    local service id state
+    for service in "$@"; do
+        while read -r id; do
+            [[ $(docker inspect -f '{{index .Config.Labels "com.docker.compose.oneoff"}}' "$id" 2>/dev/null) == True ]] && continue
+            for _ in {1..24}; do
+                state=$(docker inspect -f '{{.State.Status}}{{if .State.Health}}/{{.State.Health.Status}}{{end}}' "$id" 2>/dev/null)
+                [[ $state == running || $state == running/healthy ]] && break
+                sleep 5
+            done
+            if [[ $state != running && $state != running/healthy ]]; then
+                problems+=("$service is ${state:-missing} after the update")
+            fi
+        done < <(docker compose ps -a -q "$service")
+    done
+}
+
+# True when container $1 has an established TCP connection to container $2. IPv4 only, like the Docker networks here.
+connected() {
+    local ips
+    read -ra ips <<<"$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$2" 2>/dev/null)"
+    [[ ${#ips[@]} -gt 0 ]] || return 1
+    docker exec "$1" cat /proc/net/tcp 2>/dev/null | python3 -c '
+import socket, struct, sys
+targets = set(sys.argv[1:])
+for line in sys.stdin.readlines()[1:]:
+    fields = line.split()
+    remote = socket.inet_ntoa(struct.pack("<I", int(fields[2].split(":")[0], 16)))
+    if remote in targets and fields[3] == "01":
+        sys.exit(0)
+sys.exit(1)
+' "${ips[@]}"
+}
 
 for dir in "${projects[@]}"; do
     echo "== $dir"
@@ -38,44 +112,104 @@ for dir in "${projects[@]}"; do
         continue
     fi
 
-    before=$(docker compose ps --all --format '{{.Service}} {{.ID}}' | sort)
+    if ! $dry_run; then
+        # --ignore-pull-failures exits 0 even when an image fails to pull, so check the output for errors.
+        pull_output=$(docker compose pull --quiet --ignore-buildable --ignore-pull-failures 2>&1)
+        pull_status=$?
+        [[ -n $pull_output ]] && echo "$pull_output"
+        while read -r line; do
+            [[ -n $line ]] && problems+=("$dir: $line")
+        done < <(grep -i 'error' <<<"$pull_output")
+        if [[ $pull_status -ne 0 ]]; then
+            problems+=("$dir: docker compose pull exited with $pull_status")
+        fi
 
-    # --ignore-pull-failures exits 0 even when an image fails to pull, so check the output for errors.
-    pull_output=$(docker compose pull --quiet --ignore-buildable --ignore-pull-failures 2>&1)
-    pull_status=$?
-    [[ -n $pull_output ]] && echo "$pull_output"
-    while read -r line; do
-        [[ -n $line ]] && problems+=("$dir: $line")
-    done < <(grep -i 'error' <<<"$pull_output")
-    if [[ $pull_status -ne 0 ]]; then
-        problems+=("$dir: docker compose pull exited with $pull_status")
+        if $rebuild; then
+            # Keep the current local images as <name>:previous, so a bad rebuild can be rolled back by retagging.
+            while read -r image; do
+                [[ -n $image ]] && docker tag "$image" "${image%:*}:previous" 2>/dev/null
+            done < <(docker compose config --format json | python3 -c '
+import json, sys
+for service in json.load(sys.stdin)["services"].values():
+    if "build" in service and "image" in service:
+        print(service["image"])
+')
+            if ! build_output=$(docker compose build --pull --quiet 2>&1); then
+                echo "$build_output"
+                problems+=("$dir: docker compose build failed")
+            fi
+        fi
     fi
 
-    if ! docker compose up -d; then
-        problems+=("$dir: docker compose up failed")
+    if ! listing=$(docker compose ps --orphans=false --format '{{.Service}} {{.ID}}'); then
+        problems+=("$dir: docker compose ps failed, so nothing was updated")
+        continue
     fi
+    mapfile -t outdated < <(outdated_services <<<"$listing" | sort -u)
+    [[ ${#outdated[@]} -gt 0 ]] || continue
+    echo "Outdated: ${outdated[*]}"
+    $dry_run && continue
 
-    after=$(docker compose ps --all --format '{{.Service}} {{.ID}}' | sort)
-    while read -r service; do
-        [[ -n $service ]] && updated+=("$service")
-    done < <(comm -13 <(echo "$before") <(echo "$after") | cut -d' ' -f1)
+    if docker compose up -d --no-deps "${outdated[@]}"; then
+        updated+=("${outdated[@]}")
+        check_started "${outdated[@]}"
+    else
+        problems+=("$dir: docker compose up failed for ${outdated[*]}")
+    fi
 done
 
-docker image prune -f
+declare -A triggers=()
+for service in "${updated[@]}"; do
+    dependent=${restart_after[$service]:-}
+    [[ -n $dependent ]] && triggers[$dependent]+="$service "
+done
+# Restart each dependent once, then check that it reconnects to every service that was updated.
+for dependent in "${!triggers[@]}"; do
+    read -ra services <<<"${triggers[$dependent]}"
+    if ! running=$(docker inspect -f '{{.State.Running}}' "$dependent" 2>/dev/null); then
+        problems+=("There's no container named $dependent to restart after updating ${services[*]}")
+        continue
+    fi
+    if [[ $running != true ]]; then
+        echo "Not restarting $dependent, because it isn't running"
+        continue
+    fi
+    echo "Restarting $dependent because ${services[*]} was updated"
+    if ! docker restart "$dependent" >/dev/null; then
+        problems+=("Could not restart $dependent after updating ${services[*]}")
+        continue
+    fi
+    restarted+=("$dependent")
+    for service in "${services[@]}"; do
+        for _ in {1..24}; do
+            connected "$dependent" "$service" && break
+            sleep 5
+        done
+        connected "$dependent" "$service" || problems+=("$dependent didn't reconnect to $service after restarting")
+    done
+done
+
+while read -r name; do
+    [[ -n $name ]] && problems+=("Container $name still has a temporary name from an interrupted recreate")
+done < <(docker ps -a --format '{{.Names}}' | grep -E '^[0-9a-f]{12}_')
+
+if ! $dry_run; then
+    docker image prune -f
+    docker builder prune -f --filter until=168h | grep -E '^Total'
+fi
 
 summary=""
-if [[ ${#updated[@]} -gt 0 ]]; then
-    summary="Updated: ${updated[*]}"
-    echo "$summary"
-fi
+[[ ${#updated[@]} -gt 0 ]] && summary="Updated: ${updated[*]}"
+[[ ${#restarted[@]} -gt 0 ]] && summary+="${summary:+. }Restarted: ${restarted[*]}"
+[[ -n $summary ]] && echo "$summary"
 
 if [[ ${#problems[@]} -gt 0 ]]; then
     printf '%s\n' "${problems[@]}" >&2
-    notify "Container updates had problems" "$(printf '%s\n' "${problems[@]}" "$summary")" 8
+    $dry_run || notify "Container updates had problems" "$(printf '%s\n' "${problems[@]}" "$summary")" 8
     exit 1
 fi
 
-if [[ -n $summary ]]; then
+if [[ -n $summary ]] && ! $dry_run; then
     notify "Containers updated" "$summary" 4
 fi
 {% endraw %}

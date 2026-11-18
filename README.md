@@ -66,15 +66,22 @@ Create and edit the files as your own user, not with sudo. Every compose command
 
 ## Container updates
 
-At 02:00 every night, cron runs `~/.local/bin/update-containers`. For each project in `compose_projects`, it runs `docker compose pull`, then `docker compose up -d`, which recreates only the containers whose image changed. Services with a `build:` section are skipped. Afterwards it removes old images. Change the time with `container_update_hour`. Keep it after the apt upgrade at 01:00 and before the 06:00 reboot, because an upgrade of Docker or containerd breaks a `docker compose` run that's in progress.
+At 02:00 every night, cron runs `~/.local/bin/update-containers`. For each project in `compose_projects`, it:
 
-It sends a Gotify message listing the updated containers. If a pull or `up` fails, it sends a high-priority message instead. If nothing changed, it stays quiet. To see the logs, run:
+1. Pulls new images with `docker compose pull`.
+2. On Saturdays, rebuilds the services with a `build:` section (Caddy, mew, and music) with fresh base images. Change the day with `container_rebuild_weekday`. Before rebuilding, it keeps the current images as `<name>:previous`, so a bad rebuild can be rolled back. For Caddy, run `docker tag caddy-duckdns:previous caddy-duckdns:local && docker compose up -d --no-deps caddy` from `/mnt/data`.
+3. Recreates only the running containers whose image changed, then checks that they're running, and healthy if they have a health check. Containers you stopped stay stopped. Edits to the compose file only reach containers that get recreated for an image update, so after editing it, run `docker compose up -d <service>` for the services you changed.
+4. Restarts the containers in `container_restart_after_update` when the container they connect to was updated, and checks that they reconnect. Home Assistant needs this after a Z-Wave JS update.
+
+Afterwards it removes old images and build cache older than a week, and checks for containers left with Compose's temporary names. Change the time with `container_update_hour`. Keep it after the apt upgrade at 01:00 and before the 06:00 reboot, because an upgrade of Docker or containerd breaks a `docker compose` run that's in progress.
+
+It sends a Gotify message listing the updated and restarted containers. If anything goes wrong, it sends a high-priority message instead. If nothing changed, it stays quiet. The messages go to Gotify on this host (`gotify_local_url`), not through the reverse proxy, so you still hear about a proxy update that breaks the proxy. To see the logs, run:
 
 ```
 journalctl -t update-containers
 ```
 
-To run it by hand, run `~/.local/bin/update-containers`. To hold a container at a version, pin its image tag in the compose file.
+To run it by hand, run `~/.local/bin/update-containers`. Add `--rebuild` to rebuild the local images on another day. Add `--dry-run` to list the containers whose new image is already on the server (pulled or built, but not yet in use), without pulling, building, or changing anything. To hold a container at a version, pin its image tag in the compose file.
 
 ## Gotify token
 
