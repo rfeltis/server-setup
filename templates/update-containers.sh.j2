@@ -69,6 +69,17 @@ outdated_services() {
     done
 }
 
+# lscr.io has a shared rate limit for all its users, and refuses pulls with toomanyrequests for a moment when it's
+# reached, so pull an image that was refused again a little later.
+pull_with_retries() {
+    local delay
+    for delay in 15 60 180; do
+        sleep "$delay"
+        docker pull -q "$1" </dev/null >/dev/null && return 0
+    done
+    return 1
+}
+
 # Waits up to two minutes for each service's containers in the current project to be running, and healthy if they
 # have a health check.
 check_started() {
@@ -117,8 +128,21 @@ for dir in "${projects[@]}"; do
         pull_output=$(docker compose pull --quiet --ignore-buildable --ignore-pull-failures 2>&1)
         pull_status=$?
         [[ -n $pull_output ]] && echo "$pull_output"
+        declare -A retried=()
         while read -r line; do
-            [[ -n $line ]] && problems+=("$dir: $line")
+            [[ -n $line ]] || continue
+            if [[ $line =~ Image\ ([^ ]+)\ Error\ toomanyrequests ]]; then
+                image=${BASH_REMATCH[1]}
+                [[ -n ${retried[$image]:-} ]] && continue
+                retried[$image]=1
+                if pull_with_retries "$image"; then
+                    echo "Pulled $image after it was rate limited"
+                else
+                    problems+=("$dir: $image was still rate limited after 3 retries")
+                fi
+                continue
+            fi
+            problems+=("$dir: $line")
         done < <(grep -i 'error' <<<"$pull_output")
         if [[ $pull_status -ne 0 ]]; then
             problems+=("$dir: docker compose pull exited with $pull_status")
