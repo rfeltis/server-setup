@@ -69,7 +69,7 @@ Create and edit the files as your own user, not with sudo. Every compose command
 At 02:00 every night, cron runs `~/.local/bin/update-containers`. For each project in `compose_projects`, it:
 
 1. Pulls new images with `docker compose pull`.
-2. On Saturdays, rebuilds the services with a `build:` section (Caddy, mew, and music) with fresh base images. Change the day with `container_rebuild_weekday`. Before rebuilding, it keeps the current images as `<name>:previous`, so a bad rebuild can be rolled back. For Caddy, run `docker tag caddy-duckdns:previous caddy-duckdns:local && docker compose up -d --no-deps caddy` from `/mnt/data`.
+2. On Saturdays, rebuilds the services with a `build:` section (Caddy and music) with fresh base images. Change the day with `container_rebuild_weekday`. Before rebuilding, it keeps the current images as `<name>:previous`, so a bad rebuild can be rolled back. For Caddy, run `docker tag caddy-duckdns:previous caddy-duckdns:local && docker compose up -d --no-deps caddy` from `/mnt/data`.
 3. Recreates only the running containers whose image changed, then checks that they're running, and healthy if they have a health check. Containers you stopped stay stopped. Edits to the compose file only reach containers that get recreated for an image update, so after editing it, run `docker compose up -d <service>` for the services you changed.
 4. Restarts the containers in `container_restart_after_update` when the container they connect to was updated, and checks that they reconnect. Home Assistant needs this after a Z-Wave JS update.
 

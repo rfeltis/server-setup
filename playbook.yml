@@ -22,7 +22,7 @@
     apt_upgrade_time: "01:00"
     apt_reboot_time: "06:00"
     container_update_hour: "2"
-    # Services with a build: section (caddy, mew, music) are rebuilt with fresh base images on this weekday
+    # Services with a build: section (caddy, music) are rebuilt with fresh base images on this weekday
     # (1 is Monday, 7 is Sunday). Saturday keeps the builds away from the Sunday ZFS scrub and trim.
     container_rebuild_weekday: "6"
     # When the key is updated, the value is restarted and checked for a connection to the key. The key must be both
