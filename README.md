@@ -29,6 +29,7 @@ Extra arguments go to `ansible-playbook`. For example, `./apply.sh --check --dif
 - Command-line tools: fish, tmux, eza, btop, bat, fzf, zoxide, fastfetch, micro, ncdu, ffmpeg, mkvtoolnix, gocryptfs, and others
 - ZFS from Debian backports. If the `tank` pool isn't imported, the playbook imports it with `zpool import -f`. After an OS reinstall, the new system has a different host ID, so ZFS needs `-f` to take over the pool.
 - ZED alerts to Gotify (see below)
+- SMART disk alerts to Gotify (see below)
 - Docker from Docker's apt repository, with your user in the `docker` group. Docker only starts when the ZFS pool is mounted (see below).
 - Nightly container updates (see below)
 - Unattended upgrades for Debian, Debian security, and Docker packages. apt refreshes the package lists at 00:30 and installs upgrades at 01:00, and the server reboots at 06:00 when an update needs one. Kopia backs up every 12 hours, at 00:00 and 12:00 UTC, and the reboot time is set after the 12:00 UTC run (04:00 local in winter, 05:00 in summer). If you change Kopia's snapshot interval, check the reboot time still clears it. Change the times with `apt_update_time`, `apt_upgrade_time`, and `apt_reboot_time`.
@@ -83,6 +84,20 @@ journalctl -t update-containers
 
 To run it by hand, run `~/.local/bin/update-containers`. Add `--rebuild` to rebuild the local images on another day. Add `--dry-run` to list the containers whose new image is already on the server (pulled or built, but not yet in use), without pulling, building, or changing anything. To hold a container at a version, pin its image tag in the compose file.
 
+## SMART disk alerts
+
+smartd checks the disks' SMART health every 30 minutes. When it finds a problem, the playbook's hook, `/etc/smartmontools/run.d/20gotify`, sends a high-priority Gotify message naming the problem and the disk. smartd sends it again every day while the problem lasts. The message goes to Gotify on this host (`gotify_local_url`), like the container update messages. If Gotify is down when a problem is found, that day's message is lost, and the only trace is a line in `journalctl -u smartmontools`.
+
+Debian's own hook, `10mail`, mails root, and this server has no mail, so the playbook moves it aside to `10mail.disabled` with `dpkg-divert`. To undo that, remove the "Move the stock mail hook aside" task, then run `sudo dpkg-divert --local --rename --remove /etc/smartmontools/run.d/10mail`. Without the first step, the next `./apply.sh` moves it aside again.
+
+When the hook changes, the playbook sends a low-priority test message through the same scripts smartd uses. If Gotify isn't running yet, for example right after a reinstall, the test fails without stopping the playbook. To have smartd itself send a test message for each disk, for example once Gotify is up, run:
+
+```
+echo 'DEVICESCAN -d removable -n standby -m root -M test -M exec /usr/share/smartmontools/smartd-runner' | sudo smartd -q onecheck -s - -A - -c -
+```
+
+This reads the settings from the `echo` instead of `/etc/smartd.conf`, checks each disk once, and exits. `-s -` and `-A -` stop it from writing smartd's state files, so the running smartd isn't affected.
+
 ## Gotify token
 
 The Gotify token isn't stored in this public repo. The playbook reads it from `/mnt/data/bootstrap/secrets.yml` on the ZFS pool, which survives an OS reinstall:
@@ -92,4 +107,4 @@ gotify_url: https://gotify.example.com
 gotify_token: <app token>
 ```
 
-The file must be owned by your user, because the playbook reads it without sudo. Keep it private with `chmod 600`. If it's missing, the playbook skips the Gotify alert script, the container update script runs without notifications, and the playbook shows a warning.
+The file must be owned by your user, because the playbook reads it without sudo. Keep it private with `chmod 600`. If it's missing, the playbook skips the ZFS and SMART alert scripts, the container update script runs without notifications, and the playbook shows a warning.

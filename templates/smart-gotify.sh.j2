@@ -1,0 +1,40 @@
+#!/bin/sh
+# Sends smartd's disk warnings to Gotify. smartd runs /usr/share/smartmontools/smartd_warning.sh, which runs
+# smartd-runner, which runs every script in /etc/smartmontools/run.d. The warning comes in SMARTD_* variables
+# (see "man smartd.conf", under -M exec). Gotify on this host is used, not the reverse proxy, so a proxy outage
+# doesn't silence disk alerts.
+
+GOTIFY_URL={{ gotify_local_url | quote }}
+GOTIFY_TOKEN={{ gotify_token | quote }}
+
+if [ "${SMARTD_FAILTYPE}" = EmailTest ]; then
+  title="SMART test alert: ${SMARTD_DEVICESTRING:-no device}"
+  priority=4
+else
+  title="SMART ${SMARTD_FAILTYPE:-warning}: ${SMARTD_DEVICESTRING:-unknown device}"
+  priority=8
+fi
+
+message="${SMARTD_MESSAGE}"
+[ -n "${SMARTD_DEVICEINFO}" ] && message="${message}
+Disk: ${SMARTD_DEVICEINFO}"
+[ "${SMARTD_PREVCNT:-0}" != 0 ] && message="${message}
+First reported ${SMARTD_TFIRST}."
+case "${SMARTD_NEXTDAYS}" in
+  '') ;;
+  0) message="${message}
+Repeats at every check while the problem lasts." ;;
+  1) message="${message}
+Repeats daily while the problem lasts." ;;
+  *) message="${message}
+Repeats in ${SMARTD_NEXTDAYS} days if the problem lasts." ;;
+esac
+
+# The token goes to curl on stdin, not on its command line, where other users could see it with ps.
+printf 'X-Gotify-Key: %s\n' "${GOTIFY_TOKEN}" |
+  curl -fsS --max-time 10 \
+    -H @- \
+    --form-string "title=${title}" \
+    --form-string "message=${message}" \
+    --form-string "priority=${priority}" \
+    "${GOTIFY_URL}/message" >/dev/null

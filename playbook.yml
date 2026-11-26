@@ -90,6 +90,25 @@
         - apt-daily.timer
         - apt-daily-upgrade.timer
 
+    # Goes through the same scripts as a real smartd warning, with the variables smartd sets for its own test
+    # message (-M test), so the Gotify message proves the whole path works. A failure is shown but doesn't stop the
+    # play: right after a reinstall, the Gotify container isn't running yet.
+    - name: Send a test SMART alert
+      become: true
+      ansible.builtin.command: /usr/share/smartmontools/smartd_warning.sh
+      environment:
+        SMARTD_MAILER: /usr/share/smartmontools/smartd-runner
+        SMARTD_ADDRESS: root
+        SMARTD_FAILTYPE: EmailTest
+        SMARTD_MESSAGE: Test from the server-setup playbook, sent because the SMART alert setup changed.
+        SMARTD_DEVICESTRING: ""
+        SMARTD_DEVICEINFO: ""
+        SMARTD_PREVCNT: "0"
+        SMARTD_NEXTDAYS: ""
+      register: smart_test
+      changed_when: true
+      ignore_errors: true
+
   tasks:
     - name: Remove the backports line from sources.list
       become: true
@@ -178,7 +197,7 @@
             enabled: true
             state: started
 
-        # Tagged always because the Docker tasks need the Gotify settings too.
+        # Tagged always because the Docker and SMART tasks need the Gotify settings too.
         - name: Check for the secrets file
           tags: always
           ansible.builtin.stat:
@@ -194,7 +213,7 @@
         - name: Warn that Gotify alerts are not configured
           tags: always
           ansible.builtin.debug:
-            msg: "{{ secrets_file }} is missing, so ZFS and container update alerts will not be sent to Gotify. See README.md."
+            msg: "{{ secrets_file }} is missing, so ZFS, disk, and container update alerts will not be sent to Gotify. See README.md."
           when: not secrets.stat.exists
 
         - name: Check the Gotify zedlet
@@ -220,6 +239,56 @@
           diff: false
           when: secrets.stat.exists
           notify: Restart ZED
+
+    # smartd checks the disks every 30 minutes. Its warnings go through smartd_warning.sh and smartd-runner to the
+    # scripts in /etc/smartmontools/run.d. Debian's only script there mails root, and this server has no mail.
+    - name: Send SMART alerts to Gotify
+      tags: smart
+      block:
+        - name: Install smartmontools
+          become: true
+          ansible.builtin.apt:
+            name: smartmontools
+            state: present
+
+        - name: Enable smartd
+          become: true
+          tags: services
+          ansible.builtin.systemd_service:
+            name: smartmontools
+            enabled: true
+            state: started
+
+        # The stock mail hook would fail on every alert, so smartd would log each alert as failed. A local diversion
+        # moves it to 10mail.disabled and keeps package upgrades from bringing it back. run-parts skips names with a
+        # dot. To undo, remove this task, then run: sudo dpkg-divert --local --rename --remove /etc/smartmontools/run.d/10mail
+        - name: Move the stock mail hook aside
+          become: true
+          ansible.builtin.command:
+            argv:
+              - dpkg-divert
+              - --local
+              - --rename
+              - --divert
+              - /etc/smartmontools/run.d/10mail.disabled
+              - --add
+              - /etc/smartmontools/run.d/10mail
+          register: mail_hook_divert
+          changed_when: mail_hook_divert.stdout is search('^Adding')
+          when: gotify_token is defined
+          notify: Send a test SMART alert
+
+        - name: Install the Gotify SMART hook
+          become: true
+          ansible.builtin.template:
+            src: smart-gotify.sh.j2
+            dest: /etc/smartmontools/run.d/20gotify
+            owner: root
+            group: root
+            mode: "0700"
+          diff: false
+          when: gotify_token is defined
+          notify: Send a test SMART alert
 
     - name: Set up Docker
       tags: docker
